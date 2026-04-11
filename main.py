@@ -22,10 +22,20 @@ logger = logging.getLogger(__name__)
 # Override the default RequestValidationError to return the specific error structure
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    # This captures validation constraints like empty or missing query parameter string
+    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    message = "name is not a string" 
+    
+    for error in exc.errors():
+        error_type = error.get("type", "")
+        # If 'name' is missing entirely ("missing") or empty ("string_too_short" from min_length=1)
+        if error_type == "missing" or error_type == "string_too_short":
+            status_code = status.HTTP_400_BAD_REQUEST
+            message = "Missing or empty name parameter"
+            break
+        
     return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        content={"status": "error", "message": "Missing or empty name parameter"}
+        status_code=status_code,
+        content={"status": "error", "message": message}
     )
 
 # Override HTTP exception to force the format globally
@@ -46,14 +56,21 @@ async def generic_exception_handler(request: Request, exc: Exception):
     )
 
 @app.get("/api/classify")
-async def classify_name(name: str = Query(..., min_length=1)):
+async def classify_name(request: Request, name: str = Query(..., min_length=1)):
     """
     Classify a given name based on the Genderize API.
     """
+    # Check if multiple 'name' parameters were provided (which makes it a list, not a string)
+    if len(request.query_params.getlist("name")) > 1:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"status": "error", "message": "name is not a string"}
+        )
+
     url = f"https://api.genderize.io/?name={name}"
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
@@ -73,7 +90,7 @@ async def classify_name(name: str = Query(..., min_length=1)):
     # If the response comes back with gender: null or count: 0 
     if not data.get("gender") or data.get("count", 0) == 0:
         return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND, # Or consider returning 422 if specified
+            status_code=status.HTTP_400_BAD_REQUEST, 
             content={
                 "status": "error", 
                 "message": "No prediction available for the provided name"
